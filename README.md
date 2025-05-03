@@ -86,6 +86,51 @@ Navigate to http://localhost:5173 (or the URL shown in your terminal)
 - "Show flights with the longest distance"
 - "Compare departure delays across airlines"
 
+## Future Development
+
+The next phase of development (to be implemented in a separate branch) will transform the application into a fully agentic architecture with modular tools and multi-agent orchestration.
+
+### Agentic Architecture
+
+Instead of always following the fixed pipeline of SQL generation → execution → visualization, the system will employ specialized agents that can be called on-demand:
+
+1. **Orchestrator Agent**: The primary agent that decides which tools to use based on the user's query
+2. **SQL Generation Agent**: Specialized in converting natural language to SQL
+3. **Query Execution Agent**: Handles database connections and query execution
+4. **Visualization Agent**: Creates appropriate visualizations based on result data
+5. **Analysis Agent**: Provides qualitative insights about the data
+
+### Tool-Based Execution
+
+Each capability will be implemented as a "tool" that can be called by the orchestrator:
+
+- `generate_sql(query)`: Converts natural language to SQL
+- `execute_sql(sql_query)`: Runs SQL against the database
+- `create_visualization(data)`: Generates appropriate charts
+- `analyze_data(data, query)`: Provides insights and analysis
+- `refine_sql(query, feedback)`: Improves SQL based on feedback
+
+### Interactive Workflow
+
+The new system will feature:
+
+- **Visible Tool Execution**: Users see which tools are being called in real-time
+- **Iterative Refinement**: If SQL doesn't match user intent, the orchestrator can direct the SQL agent to refine it
+- **Selective Execution**: Skip visualization for simple queries or focus on analysis for complex ones
+- **Reasoning Transparency**: Show the orchestrator's decision-making process
+- **Feedback Loop**: Learn from user interactions to improve future responses
+
+### Technical Considerations
+
+The implementation will explore:
+- Claude's Function Calling API
+- OpenAI's Assistants API with Function Calling
+- Multi-agent frameworks like LangGraph or CrewAI
+- State management for complex agent interactions
+- Streaming responses to show real-time progress
+
+This architecture will not only improve the user experience but also create a more modular and maintainable codebase that can be extended with additional tools and capabilities in the future.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
