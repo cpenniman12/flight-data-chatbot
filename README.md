@@ -19,6 +19,16 @@ An interactive chatbot that allows users to query and visualize flight data from
 - Data analysis and visualization code generation
 - REST API for frontend communication
 
+### Tool Execution Pipeline
+The current implementation follows a fixed sequential pipeline where all tools are automatically called for every query:
+1. **SQL Generation**: Always converts natural language to SQL query
+2. **SQL Execution**: Always attempts to execute the generated SQL 
+3. **Analysis Generation**: Always generates analysis if data is returned
+4. **Visualization Generation**: Always attempts to create visualization if data is returned
+5. **Follow-up Questions**: Always generates suggested questions if data is returned
+
+This fixed pipeline approach processes all queries through the same sequence of tools regardless of query type, with conditional logic only for empty results. The upcoming agentic architecture will introduce more dynamic tool selection.
+
 ### Frontend (React/Vite)
 - Clean, minimalist UI with dark theme
 - Interactive chat interface
