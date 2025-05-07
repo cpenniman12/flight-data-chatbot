@@ -1,0 +1,12 @@
+2025-05-04 14:45:22,250 [INFO] agent_api: ANTHROPIC_API_KEY found with length: 108
+ * Serving Flask app 'integration_example'
+ * Debug mode: on
+2025-05-04 14:45:22,373 [INFO] werkzeug: [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5003
+ * Running on http://192.168.1.125:5003
+2025-05-04 14:45:22,373 [INFO] werkzeug: [33mPress CTRL+C to quit[0m
+2025-05-04 14:45:22,374 [INFO] werkzeug:  * Restarting with stat
+2025-05-04 14:45:23,033 [INFO] agent_api: ANTHROPIC_API_KEY found with length: 108
+2025-05-04 14:45:23,104 [WARNING] werkzeug:  * Debugger is active!
+2025-05-04 14:45:23,110 [INFO] werkzeug:  * Debugger PIN: 133-415-214
