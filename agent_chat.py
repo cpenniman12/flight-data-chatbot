@@ -99,14 +99,25 @@ def chat():
                 'session_id': session_id
             }), 500
         
-        # Return the results
-        return jsonify({
+        # Prepare response based on intent
+        response = {
             'sql_query': result.get("sql_query", ""),
-            'data': result.get("data", []),
             'session_id': session_id,
-            'column_names': result.get("column_names", []),
-            'row_count': result.get("row_count", 0)
-        })
+            'intent': result.get("intent", "unknown")
+        }
+        
+        # Add data if available (for execution intent)
+        if "data" in result:
+            response['data'] = result.get("data", [])
+            response['column_names'] = result.get("column_names", [])
+            response['row_count'] = result.get("row_count", 0)
+        
+        # Add analysis if available
+        if "analysis" in result:
+            response['analysis'] = result.get("analysis")
+        
+        # Return the results
+        return jsonify(response)
         
     except Exception as e:
         print(f"Error in chat endpoint: {str(e)}")
@@ -126,4 +137,4 @@ def get_progress():
     return jsonify({'events': events})
 
 if __name__ == '__main__':
-    app.run(port=5001, debug=True) 
+    app.run(port=5002, debug=True) 

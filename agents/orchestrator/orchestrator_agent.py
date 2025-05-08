@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional, Callable
 import anthropic
 import json
 import os
+import re
 
 from agents.base.base_agent import BaseAgent
 from agents.sql_generation.sql_generation_agent import SQLGenerationAgent
@@ -50,7 +51,7 @@ class OrchestratorAgent(BaseAgent):
         self.conversation_history = []
         
     def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process the user query and coordinate other agents.
+        """Process the user query and coordinate other agents with intent-based decisions.
         
         Args:
             input_data: Dictionary containing:
@@ -74,7 +75,12 @@ class OrchestratorAgent(BaseAgent):
             # Report progress
             self._report_progress("start", {"message": "Processing your query..."})
             
-            # Step 1: Generate SQL from the query
+            # Step 1: Determine user's intent using LLM
+            self._report_progress("intent_analysis", {"message": "Analyzing your request..."})
+            intent = self._determine_intent(user_query)
+            logger.info(f"Determined intent: {intent}")
+            
+            # Step 2: Generate SQL from the query
             self._report_progress("sql_generation", {"message": "Generating SQL query..."})
             
             sql_generation_result = self.sql_generation_agent.process({
@@ -93,7 +99,35 @@ class OrchestratorAgent(BaseAgent):
             # Extract the generated SQL
             sql_query = sql_generation_result.get("sql_query", "")
             
-            # Step 2: Execute the SQL query
+            # Step 3: Validate if the SQL matches the user's intent
+            self._report_progress("sql_validation", {"message": "Validating SQL query..."})
+            validation_result = self._validate_sql(user_query, sql_query, intent)
+            
+            # If validation fails, we might want to regenerate
+            if not validation_result["is_valid"]:
+                logger.warning(f"SQL validation failed: {validation_result['reasoning']}")
+                # Could implement regeneration logic here, but for now we'll proceed
+            
+            # Step 4: If intent is SQL_GENERATION_ONLY, return just the SQL
+            if intent == "SQL_GENERATION_ONLY":
+                logger.info("User wanted SQL only, returning without execution")
+                self._report_progress("finishing", {"message": "SQL generation complete."})
+                
+                # Update conversation history with SQL
+                self.conversation_history.append({"role": "assistant", "content": sql_query})
+                
+                # Keep conversation history limited
+                if len(self.conversation_history) > 10:
+                    self.conversation_history = self.conversation_history[-10:]
+                
+                return {
+                    "sql_query": sql_query,
+                    "intent": "SQL generation only",
+                    "session_id": session_id,
+                    "status": "success"
+                }
+            
+            # Step 5: Execute the SQL query if execution is needed
             self._report_progress("sql_execution", {"message": "Executing SQL query..."})
             
             sql_execution_result = self.sql_execution_agent.process({
@@ -146,13 +180,22 @@ class OrchestratorAgent(BaseAgent):
                 # Update the SQL query if regeneration was successful
                 sql_query = regenerated_sql_query
             
-            # Step 3: Prepare the final response
+            # Step 6: Analyze the execution results to see if they fully answer the query
+            self._report_progress("analyzing_results", {"message": "Analyzing results..."})
+            results_analysis = self._analyze_results(
+                user_query, 
+                sql_query, 
+                sql_execution_result.get("results", []),
+                sql_execution_result.get("column_names", [])
+            )
+            
+            # Step 7: Prepare the final response
             self._report_progress("finishing", {"message": "Preparing results..."})
             
             # Update conversation history with SQL
             self.conversation_history.append({"role": "assistant", "content": sql_query})
             
-            # Keep conversation history limited to last 5 exchanges
+            # Keep conversation history limited to last 10 exchanges
             if len(self.conversation_history) > 10:
                 self.conversation_history = self.conversation_history[-10:]
             
@@ -163,8 +206,13 @@ class OrchestratorAgent(BaseAgent):
                 "column_names": sql_execution_result.get("column_names", []),
                 "row_count": sql_execution_result.get("row_count", 0),
                 "session_id": session_id,
+                "intent": "SQL generation and execution",
                 "status": "success"
             }
+            
+            # Add analysis if present
+            if results_analysis.get("summary"):
+                final_result["analysis"] = results_analysis.get("summary")
             
             # Report completion
             self._report_progress("complete", {"message": "Query processed successfully"})
@@ -178,6 +226,142 @@ class OrchestratorAgent(BaseAgent):
                 "error": f"Orchestration error: {str(e)}",
                 "status": "error"
             }
+    
+    def _determine_intent(self, user_query: str) -> str:
+        """Determine the user's intent using LLM reasoning.
+        
+        Args:
+            user_query: The user's query
+            
+        Returns:
+            String indicating the intent: "SQL_GENERATION_ONLY" or "SQL_GENERATION_AND_EXECUTION"
+        """
+        prompt = f"""
+        Analyze the following user query and determine if the user:
+        1. Only wants a SQL query to be generated (SQL_GENERATION_ONLY)
+        2. Wants the SQL to be generated and executed to get results (SQL_GENERATION_AND_EXECUTION)
+        
+        User query: "{user_query}"
+        
+        Common indicators of SQL_GENERATION_ONLY:
+        - Phrases like "just give me the SQL", "generate SQL", "SQL query for", "write SQL"
+        - Explicit mentions of wanting only SQL without execution
+        - Requests for code generation
+        
+        Common indicators of SQL_GENERATION_AND_EXECUTION:
+        - Questions about data ("How many", "What is", "Show me")
+        - Requests for analysis or results
+        - No explicit mention of just wanting SQL
+        
+        Return only SQL_GENERATION_ONLY or SQL_GENERATION_AND_EXECUTION based on your analysis.
+        """
+        
+        try:
+            # Call the LLM to determine intent
+            response = self.client.messages.create(
+                model="claude-3-7-sonnet-20250219",
+                max_tokens=50,
+                temperature=0,
+                system="You are an intent classifier that determines if users want SQL generation only or also SQL execution.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            intent_text = response.content[0].text.strip()
+            
+            # Default to execution if ambiguous
+            if "SQL_GENERATION_ONLY" in intent_text:
+                return "SQL_GENERATION_ONLY"
+            else:
+                return "SQL_GENERATION_AND_EXECUTION"
+        except Exception as e:
+            logger.error(f"Error determining intent: {str(e)}")
+            # Default to execution in case of error
+            return "SQL_GENERATION_AND_EXECUTION"
+    
+    def _validate_sql(self, user_query: str, sql_query: str, intent: str) -> Dict[str, Any]:
+        """Validate if the generated SQL matches the user's query intent.
+        
+        Args:
+            user_query: The user's original query
+            sql_query: The generated SQL query
+            intent: The determined intent
+            
+        Returns:
+            Dictionary with validation results
+        """
+        prompt = f"""
+        Original user query: "{user_query}"
+        Generated SQL: {sql_query}
+        User's intent: {intent}
+        
+        Analyze whether the generated SQL correctly addresses the user's query:
+        1. Does the SQL query match what the user was asking for?
+        2. Are there any misinterpretations in the SQL?
+        3. Would executing this SQL provide the information the user wanted?
+        
+        Respond with a JSON object:
+        {{
+            "is_valid": true/false,
+            "reasoning": "Your explanation of whether the SQL matches the intent",
+            "suggestions": "Any suggestions for improvement if not valid"
+        }}
+        """
+        
+        try:
+            # Call the LLM to validate the SQL
+            response = self.client.messages.create(
+                model="claude-3-7-sonnet-20250219",
+                max_tokens=300,
+                temperature=0,
+                system="You are a SQL expert validating if generated SQL matches user intent.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Parse the JSON response
+            validation_text = response.content[0].text.strip()
+            
+            # Try to find JSON in the response
+            json_match = re.search(r'({.*})', validation_text, re.DOTALL)
+            if json_match:
+                try:
+                    validation_result = json.loads(json_match.group(1))
+                    return validation_result
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse validation JSON: {validation_text}")
+            
+            # Fallback if no valid JSON found
+            return {
+                "is_valid": True,  # Default to valid if parsing fails
+                "reasoning": "Failed to parse validation result",
+                "suggestions": None
+            }
+        except Exception as e:
+            logger.error(f"Error validating SQL: {str(e)}")
+            return {
+                "is_valid": True,  # Default to valid if error
+                "reasoning": f"Error validating SQL: {str(e)}",
+                "suggestions": None
+            }
+    
+    def _analyze_results(self, user_query: str, sql_query: str, 
+                         results: List[Dict[str, Any]], column_names: List[str]) -> Dict[str, Any]:
+        """Analyze execution results to determine if they answer the query or if further processing is needed.
+        
+        Args:
+            user_query: The user's original query
+            sql_query: The executed SQL query
+            results: The query results
+            column_names: Names of columns in the results
+            
+        Returns:
+            Dictionary with analysis results
+        """
+        # Simple implementation for now - could be expanded later
+        return {
+            "needs_additional_query": False,
+            "summary": "",
+            "is_complete": True
+        }
     
     def _report_progress(self, event_type: str, data: Dict[str, Any]) -> None:
         """Report progress via the callback if available.

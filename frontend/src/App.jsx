@@ -65,7 +65,7 @@ function App() {
     setError(null)
     
     try {
-      const response = await fetch('http://localhost:5001/chat', {
+      const response = await fetch('http://localhost:5002/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -315,43 +315,60 @@ function App() {
                         )}
                       </div>
 
-                      <div style={{ marginBottom: '1rem' }}>
-                        <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#ccc' }}>Results</h3>
-                        <div style={{ overflowX: 'auto' }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                            <thead>
-                              <tr>
-                                {message.content.data.length > 0 && Object.keys(message.content.data[0] || {}).map((key) => (
-                                  <th key={key} style={{ 
-                                    padding: '0.5rem',
-                                    backgroundColor: '#1a1a1a',
-                                    border: '1px solid #444',
-                                    textAlign: 'left',
-                                    color: '#ddd'
-                                  }}>
-                                    {key}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {message.content.data.map((row, i) => (
-                                <tr key={i}>
-                                  {Object.values(row).map((value, j) => (
-                                    <td key={j} style={{ 
+                      {/* Only render results table if data exists (for SQL_GENERATION_AND_EXECUTION intent) */}
+                      {message.content.data && message.content.data.length > 0 ? (
+                        <div style={{ marginBottom: '1rem' }}>
+                          <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#ccc' }}>Results</h3>
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                              <thead>
+                                <tr>
+                                  {message.content.data.length > 0 && Object.keys(message.content.data[0] || {}).map((key) => (
+                                    <th key={key} style={{ 
                                       padding: '0.5rem',
+                                      backgroundColor: '#1a1a1a',
                                       border: '1px solid #444',
+                                      textAlign: 'left',
                                       color: '#ddd'
                                     }}>
-                                      {value}
-                                    </td>
+                                      {key}
+                                    </th>
                                   ))}
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                              </thead>
+                              <tbody>
+                                {message.content.data.map((row, i) => (
+                                  <tr key={i}>
+                                    {Object.values(row).map((value, j) => (
+                                      <td key={j} style={{ 
+                                        padding: '0.5rem',
+                                        border: '1px solid #444',
+                                        color: '#ddd'
+                                      }}>
+                                        {value}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        /* Show a message when intent is SQL_GENERATION_ONLY */
+                        message.content.intent === "SQL generation only" && (
+                          <div style={{ 
+                            marginBottom: '1rem',
+                            padding: '0.75rem',
+                            backgroundColor: '#343a40',
+                            borderRadius: '4px',
+                            fontSize: '0.9rem',
+                            color: '#ddd'
+                          }}>
+                            <p style={{ margin: 0 }}>SQL query generated without execution as requested.</p>
+                          </div>
+                        )
+                      )}
 
                       {message.content.visualization && (
                         <div>
