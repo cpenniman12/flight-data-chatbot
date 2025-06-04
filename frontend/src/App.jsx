@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import Plot from 'react-plotly.js'
+import config from './config'
 
 function App() {
   const [query, setQuery] = useState('')
@@ -65,7 +66,7 @@ function App() {
     setError(null)
     
     try {
-      const response = await fetch('http://localhost:5001/chat', {
+      const response = await fetch(`${config.API_BASE_URL}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -77,7 +78,11 @@ function App() {
       })
       
       if (!response.ok) {
-        throw new Error('Failed to get response')
+        // Check if backend is available
+        if (response.status === 0 || !response.status) {
+          throw new Error('Backend server is not available. Please ensure the Flask backend is running.')
+        }
+        throw new Error(`Server error: ${response.status}`)
       }
       
       const data = await response.json()
@@ -90,7 +95,16 @@ function App() {
       const botMessage = { type: 'bot', content: data }
       setMessages(prev => [...prev, botMessage])
     } catch (err) {
-      setError(err.message)
+      let errorMessage = err.message
+      
+      // Provide helpful error messages based on error type
+      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        errorMessage = 'Unable to connect to the backend server. Please make sure the Flask backend is running and accessible.'
+      } else if (err.message.includes('CORS')) {
+        errorMessage = 'Cross-origin request blocked. Please check the backend CORS configuration.'
+      }
+      
+      setError(errorMessage)
     } finally {
       setLoading(false)
     }
@@ -162,6 +176,19 @@ function App() {
               Clear
             </button>
           )}
+        </div>
+
+        {/* Status indicator for backend connection */}
+        <div style={{
+          fontSize: '0.8rem',
+          color: '#888',
+          marginBottom: '1rem',
+          textAlign: 'center'
+        }}>
+          {import.meta.env.PROD ? 
+            'Production mode - connecting to deployed backend' : 
+            'Development mode - connecting to localhost:5001'
+          }
         </div>
         
         <div style={{ 
