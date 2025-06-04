@@ -21,6 +21,44 @@ function App() {
     "Compare departure delays across airlines"
   ]
 
+  // Demo data for when backend is not available
+  const getDemoResponse = (userQuery) => {
+    const demoData = {
+      sql_query: "SELECT carrier, COUNT(*) as flight_count FROM flights GROUP BY carrier ORDER BY flight_count DESC LIMIT 5;",
+      data: [
+        { carrier: "EV", flight_count: 54173 },
+        { carrier: "B6", flight_count: 54635 },
+        { carrier: "UA", flight_count: 58665 },
+        { carrier: "DL", flight_count: 48110 },
+        { carrier: "AA", flight_count: 32729 }
+      ],
+      analysis: "The data shows that ExpressJet (EV) had the highest number of flights in 2013, followed closely by JetBlue (B6) and United Airlines (UA). This demonstrates the significant role of regional carriers in NYC flight operations.",
+      visualization: {
+        data: [{
+          x: ["EV", "B6", "UA", "DL", "AA"],
+          y: [54173, 54635, 58665, 48110, 32729],
+          type: 'bar',
+          marker: { color: '#636efa' }
+        }],
+        layout: {
+          title: 'Top 5 Carriers by Flight Count',
+          xaxis: { title: 'Carrier' },
+          yaxis: { title: 'Number of Flights' }
+        }
+      },
+      follow_up_questions: [
+        "Which carrier had the most delays?",
+        "What were the most popular destinations?",
+        "How did weather affect flight operations?",
+        "Which airports were busiest?"
+      ]
+    }
+    
+    return new Promise((resolve) => {
+      setTimeout(() => resolve(demoData), 1000) // Simulate API delay
+    })
+  }
+
   // Load messages from localStorage on component mount
   useEffect(() => {
     const savedMessages = localStorage.getItem('chatMessages')
@@ -66,30 +104,42 @@ function App() {
     setError(null)
     
     try {
-      const response = await fetch(`${config.API_BASE_URL}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          query: currentQuery, // Use stored query value
-          session_id: sessionId
-        }),
-      })
+      let data
       
-      if (!response.ok) {
-        // Check if backend is available
-        if (response.status === 0 || !response.status) {
-          throw new Error('Backend server is not available. Please ensure the Flask backend is running.')
+      if (config.DEMO_MODE) {
+        // Use demo mode
+        data = await getDemoResponse(currentQuery)
+        
+        // Generate session ID if needed
+        if (!sessionId) {
+          setSessionId('demo-session-' + Date.now())
         }
-        throw new Error(`Server error: ${response.status}`)
-      }
-      
-      const data = await response.json()
-      
-      // Update session ID if provided
-      if (data.session_id) {
-        setSessionId(data.session_id)
+      } else {
+        // Use real backend
+        const response = await fetch(`${config.API_BASE_URL}/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            query: currentQuery,
+            session_id: sessionId
+          }),
+        })
+        
+        if (!response.ok) {
+          if (response.status === 0 || !response.status) {
+            throw new Error('Backend server is not available. Please ensure the Flask backend is running.')
+          }
+          throw new Error(`Server error: ${response.status}`)
+        }
+        
+        data = await response.json()
+        
+        // Update session ID if provided
+        if (data.session_id) {
+          setSessionId(data.session_id)
+        }
       }
       
       const botMessage = { type: 'bot', content: data }
@@ -122,8 +172,6 @@ function App() {
   // Handle suggestion click
   const handleSuggestionClick = (suggestion) => {
     setQuery(suggestion)
-    // Optional: Auto-submit the form
-    // handleSubmit(new Event('submit'))
   }
 
   // Toggle SQL query visibility
@@ -178,16 +226,20 @@ function App() {
           )}
         </div>
 
-        {/* Status indicator for backend connection */}
+        {/* Status indicator */}
         <div style={{
           fontSize: '0.8rem',
           color: '#888',
           marginBottom: '1rem',
-          textAlign: 'center'
+          textAlign: 'center',
+          padding: '0.5rem',
+          backgroundColor: config.DEMO_MODE ? '#2a2a0f' : '#0f2a2a',
+          borderRadius: '4px',
+          border: `1px solid ${config.DEMO_MODE ? '#4a4a1f' : '#1f4a4a'}`
         }}>
-          {import.meta.env.PROD ? 
-            'Production mode - connecting to deployed backend' : 
-            'Development mode - connecting to localhost:5001'
+          {config.DEMO_MODE ? 
+            '🎮 Demo Mode: Showing sample data and visualizations' : 
+            '🔗 Live Mode: Connected to backend server'
           }
         </div>
         
@@ -216,6 +268,11 @@ function App() {
                 <p style={{ fontSize: '1rem', color: '#888' }}>
                   Try asking a question or select one below:
                 </p>
+                {config.DEMO_MODE && (
+                  <p style={{ fontSize: '0.9rem', color: '#999', marginTop: '1rem', fontStyle: 'italic' }}>
+                    Currently in demo mode - all responses use sample data for demonstration
+                  </p>
+                )}
               </div>
               <div style={{ 
                 display: 'flex', 
@@ -477,7 +534,7 @@ function App() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '0.5rem' }}>
           <input
             type="text"
-            placeholder="Ask about flight data..."
+            placeholder={config.DEMO_MODE ? "Ask about flight data... (demo responses)" : "Ask about flight data..."}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             style={{
