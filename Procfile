@@ -1,1 +1,1 @@
-web: python flight_chat.py
+web: gunicorn flight_chat:app

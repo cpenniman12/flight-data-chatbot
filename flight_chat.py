@@ -20,13 +20,19 @@ app.secret_key = os.urandom(24)  # Secret key for sessions
 CORS(app)  # Enable CORS for all routes
 
 # Database connection
-DB_USER = 'cooperpenniman'
-DB_PASSWORD = ''
-DB_HOST = 'localhost'
-DB_PORT = '5432'
-DB_NAME = 'nycflights'
+DB_USER = os.getenv('DB_USER', 'cooperpenniman')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '5432')
+DB_NAME = os.getenv('DB_NAME', 'nycflights')
 
-conn_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# For Render deployment, use DATABASE_URL if available
+DATABASE_URL = os.getenv('DATABASE_URL')
+if DATABASE_URL:
+    conn_string = DATABASE_URL
+else:
+    conn_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
 engine = create_engine(conn_string)
 
 # Initialize Anthropic client
@@ -476,4 +482,5 @@ def chat():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=5001, debug=True) 
+    port = int(os.getenv('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=False) 
