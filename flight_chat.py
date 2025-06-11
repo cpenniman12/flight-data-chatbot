@@ -342,12 +342,12 @@ Make them specific and actionable. Return as a simple list, one question per lin
 @app.route('/')
 def serve_frontend():
     """Serve the main frontend page."""
-    return send_file('index.html')
+    return send_file(os.path.join('frontend', 'dist', 'index.html'))
 
 @app.route('/flight-data-chatbot/<path:filename>')
 def serve_static(filename):
     """Serve static files from the build directory."""
-    return send_from_directory('dist', filename)
+    return send_from_directory(os.path.join('frontend', 'dist'), filename)
 
 @app.route('/chat', methods=['POST'])
 def chat():
