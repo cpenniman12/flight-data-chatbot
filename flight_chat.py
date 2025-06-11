@@ -3,9 +3,9 @@ import json
 import uuid
 from typing import Dict, List, Optional
 import pandas as pd
-from sqlalchemy import create_engine, text
+import requests
 import anthropic
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, send_from_directory, send_file
 import plotly.express as px
 import plotly.graph_objects as go
 from dotenv import load_dotenv
@@ -19,23 +19,53 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Secret key for sessions
 CORS(app)  # Enable CORS for all routes
 
-# Database connection
-DB_USER = 'cooperpenniman'
-DB_PASSWORD = ''
-DB_HOST = 'localhost'
-DB_PORT = '5432'
-DB_NAME = 'nycflights'
-
-conn_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-engine = create_engine(conn_string)
+# Supabase configuration
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
 
 # Initialize Anthropic client
-client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+if ANTHROPIC_API_KEY:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+else:
+    client = None
+    print("Warning: ANTHROPIC_API_KEY not found. Set it in Render environment variables for AI responses.")
 
 # Store conversation histories
 conversations = {}
 
-# Schema context for the model
+def execute_supabase_sql(sql_query):
+    """Execute SQL query using Supabase RPC function."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise Exception("Supabase configuration missing")
+    
+    url = f"{SUPABASE_URL}/rest/v1/rpc/exec_sql"
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {"query_text": sql_query}
+    
+    response = requests.post(url, headers=headers, json=data)
+    response.raise_for_status()
+    
+    result = response.json()
+    if isinstance(result, dict) and 'error' in result:
+        raise Exception(f"SQL Error: {result['error']}")
+    
+    return result
+
+def get_flight_count():
+    """Get count of flight records."""
+    try:
+        result = execute_supabase_sql("SELECT COUNT(*) as count FROM flights")
+        return result[0]['count'] if result and len(result) > 0 else 0
+    except Exception as e:
+        print(f"Error getting flight count: {e}")
+        return 0
+
+# Schema context for the model (hardcoded as you mentioned)
 SCHEMA_CONTEXT = """
 The database contains the following tables:
 
@@ -48,69 +78,65 @@ The database contains the following tables:
    - name (text): Airport name
    - lat (float): Latitude
    - lon (float): Longitude
-   - alt (int): Altitude
-   - tz (int): Timezone offset
+   - alt (integer): Altitude
+   - tz (integer): Timezone offset from UTC
    - dst (text): Daylight savings time zone
    - tzone (text): IANA time zone
 
 3. planes
    - tailnum (text): Tail number
-   - year (int): Year manufactured
-   - type (text): Type of aircraft
+   - year (integer): Year manufactured
+   - type (text): Type of plane
    - manufacturer (text): Manufacturer
    - model (text): Model
-   - engines (int): Number of engines
-   - seats (int): Number of seats
-   - speed (int): Average cruising speed
-   - engine (text): Engine type
+   - engines (integer): Number of engines
+   - seats (integer): Number of seats
+   - speed (integer): Average cruising speed in mph
+   - engine (text): Type of engine
 
 4. weather
-   - origin (text): Weather station (FAA code)
-   - year (int): Year
-   - month (int): Month
-   - day (int): Day
-   - hour (int): Hour
-   - temp (float): Temperature (F)
-   - dewp (float): Dew point (F)
-   - humid (float): Humidity
-   - wind_dir (int): Wind direction
-   - wind_speed (float): Wind speed
-   - wind_gust (float): Wind gust
-   - precip (float): Precipitation
-   - pressure (float): Pressure
-   - visib (float): Visibility
-   - time_hour (timestamp): Date and hour
+   - origin (text): Origin airport
+   - year, month, day, hour (integer): Date and time
+   - temp, dewp (float): Temperature and dewpoint in F
+   - humid (float): Relative humidity
+   - wind_dir (integer): Wind direction in degrees
+   - wind_speed, wind_gust (float): Wind speed and gust speed in mph
+   - precip (float): Precipitation in inches
+   - pressure (float): Sea level pressure in millibars
+   - visib (float): Visibility in miles
+   - time_hour (timestamp): Date and hour as POSIXct date
 
 5. flights
-   - year (int): Year
-   - month (int): Month
-   - day (int): Day
-   - dep_time (int): Departure time
-   - sched_dep_time (int): Scheduled departure time
-   - dep_delay (float): Departure delay
-   - arr_time (int): Arrival time
-   - sched_arr_time (int): Scheduled arrival time
-   - arr_delay (float): Arrival delay
-   - carrier (text): Carrier code
-   - flight (int): Flight number
-   - tailnum (text): Tail number
-   - origin (text): Origin airport
-   - dest (text): Destination airport
-   - air_time (float): Air time
-   - distance (float): Distance
-   - hour (int): Hour
-   - minute (int): Minute
-   - time_hour (timestamp): Date and hour
+   - year, month, day (integer): Date of departure
+   - dep_time, arr_time (integer): Actual departure and arrival times (HHMM)
+   - sched_dep_time, sched_arr_time (integer): Scheduled departure and arrival times (HHMM)
+   - dep_delay, arr_delay (integer): Departure and arrival delays in minutes
+   - carrier (text): Two letter carrier abbreviation
+   - flight (integer): Flight number
+   - tailnum (text): Plane tail number
+   - origin, dest (text): Origin and destination airports
+   - air_time (integer): Amount of time spent in the air in minutes
+   - distance (integer): Distance between airports in miles
+   - hour, minute (integer): Time of scheduled departure broken into hour and minutes
+   - time_hour (timestamp): Scheduled date and hour of the flight as POSIXct date
 """
 
-def generate_sql(user_query: str, conversation_history: List[Dict] = None) -> str:
-    """Generate SQL query based on user's natural language request and conversation history."""
+def generate_sql_query(user_query: str, conversation_history: List[Dict] = None) -> str:
+    """Generate SQL query from natural language using Claude."""
+    if not client:
+        # Fallback simple queries if no API key
+        if 'delay' in user_query.lower():
+            return "SELECT carrier, AVG(dep_delay) as avg_delay FROM flights WHERE dep_delay IS NOT NULL GROUP BY carrier ORDER BY avg_delay DESC LIMIT 10;"
+        elif 'carrier' in user_query.lower() or 'airline' in user_query.lower():
+            return "SELECT a.name, COUNT(*) as flight_count FROM flights f JOIN airlines a ON f.carrier = a.carrier GROUP BY a.name ORDER BY flight_count DESC LIMIT 10;"
+        else:
+            return "SELECT carrier, COUNT(*) as flights, AVG(dep_delay) as avg_delay FROM flights GROUP BY carrier ORDER BY flights DESC LIMIT 10;"
     
     # Build the prompt with conversation history if available
     conversation_context = ""
     if conversation_history and len(conversation_history) > 0:
         conversation_context = "Previous conversation:\n"
-        for msg in conversation_history:
+        for msg in conversation_history[-4:]:  # Last 4 messages only
             if msg["role"] == "user":
                 conversation_context += f"User: {msg['content']}\n"
             else:
@@ -123,357 +149,279 @@ def generate_sql(user_query: str, conversation_history: List[Dict] = None) -> st
 {conversation_context}
 User request: {user_query}
 
-Generate a SQL query that answers the user's request. ONLY return the SQL query with NO markdown formatting, NO ```sql tags, and NO explanations.
+Generate a SQL query that answers the user's request. ONLY return the SQL query with NO markdown formatting,
+ NO ```sql tags, and NO explanations.
 IMPORTANT RULES:
-1. Do not use ROUND() function, use CAST() with decimal type instead: "CAST(number AS decimal(10,2))"
-2. Always use single SQL statement only, not multiple statements
-3. Never use EXTRACT() function, use date_part() instead
-4. All table columns used in the query must be properly listed in the GROUP BY clause
-5. Never reference time_hour directly in GROUP BY, extract parts from it first"""
+1. This is a PostgreSQL database
+2. Use simple aggregation functions like AVG(), COUNT(), SUM()
+3. Always use single SQL statement only, not multiple statements
+4. Add LIMIT 20 to prevent large result sets
+5. For PostgreSQL, you can use EXTRACT() for date functions
+6. All table columns used in the query must be properly listed in the GROUP BY clause
+7. Handle NULL values appropriately with IS NOT NULL or COALESCE"""
 
-    response = client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=1000,
-        temperature=0,
-        system="You are a SQL expert. Generate ONLY the SQL query with NO markdown formatting, NO ```sql tags, and NO explanations.",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    sql_query = response.content[0].text.strip()
-    
-    # Remove any markdown formatting or sql tags if they exist
-    if sql_query.startswith("```"):
-        sql_query = sql_query.split("\n", 1)[1]
-    if sql_query.endswith("```"):
-        sql_query = sql_query.rsplit("\n", 1)[0]
-    
-    sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
-    
-    # Make sure query doesn't have multiple statements
-    if ";" in sql_query and not sql_query.endswith(";"):
-        sql_query = sql_query.split(";")[0] + ";"
-    
-    # Replace problematic functions
-    sql_query = sql_query.replace("EXTRACT(", "date_part(")
-    sql_query = sql_query.replace("ROUND(", "CAST(")
-    
-    return sql_query
-
-def execute_sql(sql_query: str) -> pd.DataFrame:
-    """Execute SQL query and return results as DataFrame."""
-    with engine.connect() as conn:
-        return pd.read_sql(text(sql_query), conn)
-
-def generate_visualization(df: pd.DataFrame, user_query: str) -> str:
-    """Generate visualization code based on the DataFrame and user query."""
-    # Determine column types for better visualization code
-    dtypes = {col: str(df[col].dtype) for col in df.columns}
-    numeric_cols = [col for col, dtype in dtypes.items() if 'int' in dtype or 'float' in dtype]
-    categorical_cols = [col for col, dtype in dtypes.items() if 'object' in dtype or 'str' in dtype]
-    
-    # Limit data sample to prevent context overflow
-    data_preview = df.head(3).to_string()
-    
-    # Simplified prompt focused on basic visualization types
-    prompt = f"""Given this DataFrame with columns and their types:
-{dtypes}
-
-And this sample of data:
-{data_preview}
-
-Create a SIMPLE visualization using Plotly Express for this query: "{user_query}"
-
-ONLY use the following:
-- For bar charts: px.bar(df, x='{categorical_cols[0] if categorical_cols else numeric_cols[0]}', y='{numeric_cols[0] if numeric_cols else df.columns[0]}')
-- For line charts: px.line(df, x='{categorical_cols[0] if categorical_cols else numeric_cols[0]}', y='{numeric_cols[0] if numeric_cols else df.columns[0]}')
-- For pie charts: px.pie(df, names='{categorical_cols[0] if categorical_cols else df.columns[0]}', values='{numeric_cols[0] if numeric_cols else df.columns[1]}')
-
-Return ONLY valid executable Python code using Plotly Express (px). No explanation."""
-
-    response = client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=500,
-        temperature=0,
-        system="You are a data visualization expert. Generate ONLY Python code with NO markdown, NO tags, NO explanations.",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    viz_code = response.content[0].text.strip()
-    
-    # Remove any markdown formatting if it exists
-    if viz_code.startswith("```"):
-        viz_code = viz_code.split("\n", 1)[1]
-    if viz_code.endswith("```"):
-        viz_code = viz_code.rsplit("\n", 1)[0]
-    
-    viz_code = viz_code.replace("```python", "").replace("```", "").strip()
-    
-    # Fallback to simplest visualization if code looks complex
-    if len(viz_code.split("\n")) > 10:
-        if numeric_cols and len(df) > 0:
-            x_col = categorical_cols[0] if categorical_cols else df.columns[0]
-            y_col = numeric_cols[0] if numeric_cols else df.columns[1] if len(df.columns) > 1 else df.columns[0]
-            viz_code = f"import plotly.express as px\nfig = px.bar(df, x='{x_col}', y='{y_col}', title='Results')"
-    
-    # Add import if missing
-    if "import plotly.express as px" not in viz_code:
-        viz_code = "import plotly.express as px\n" + viz_code
-    
-    # Ensure the code returns a figure object
-    if "fig =" not in viz_code and "fig=" not in viz_code:
-        viz_code += "\nfig = px.bar(df, x='{}', y='{}')".format(
-            df.columns[0], 
-            df.columns[1] if len(df.columns) > 1 else df.columns[0]
+    try:
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
         )
-    
-    return viz_code
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"Error generating SQL: {e}")
+        return "SELECT carrier, COUNT(*) as flights FROM flights GROUP BY carrier ORDER BY flights DESC LIMIT 10;"
 
-def generate_analysis(df: pd.DataFrame, user_query: str, sql_query: str) -> str:
-    """Generate qualitative analysis of the data using Claude 3.7."""
-    # Determine column types for better analysis
-    dtypes = {col: str(df[col].dtype) for col in df.columns}
-    
-    # Get a summary of the data
-    data_summary = ""
-    if not df.empty:
-        # Basic stats for numeric columns
-        numeric_cols = [col for col, dtype in dtypes.items() if 'int' in dtype or 'float' in dtype]
-        if numeric_cols:
-            data_summary += "Numeric column statistics:\n"
-            for col in numeric_cols[:3]:  # Limit to first 3 numeric columns to avoid context overflow
-                data_summary += f"{col}: min={df[col].min()}, max={df[col].max()}, mean={df[col].mean():.2f}\n"
+def execute_query_and_generate_response(sql_query: str, user_query: str) -> Dict:
+    """Execute SQL query and generate comprehensive response."""
+    try:
+        # Execute the SQL query
+        data = execute_supabase_sql(sql_query)
         
-        # Value counts for categorical columns
-        categorical_cols = [col for col, dtype in dtypes.items() if 'object' in dtype or 'str' in dtype]
-        if categorical_cols:
-            data_summary += "\nCategorical column value counts:\n"
-            for col in categorical_cols[:2]:  # Limit to first 2 categorical columns
-                top_values = df[col].value_counts().head(3)
-                data_summary += f"{col} top values: {dict(top_values)}\n"
+        if not data or len(data) == 0:
+            return {
+                'sql': sql_query,
+                'data': [],
+                'analysis': "No data found for your query.",
+                'visualization': None,
+                'suggestions': ["Try a different question", "Check your search criteria"]
+            }
         
-        # Row count
-        data_summary += f"\nTotal rows: {len(df)}"
-    else:
-        data_summary = "No data returned from the query."
-    
-    # Create prompt for analysis
-    prompt = f"""User query: "{user_query}"
-
-SQL query executed:
-{sql_query}
-
-DataFrame columns and types:
-{dtypes}
-
-Data summary:
-{data_summary}
-
-Please provide a brief, concise qualitative analysis of this data in relation to the user's question. Include insights that aren't obvious from just looking at the raw numbers.
-
-If the user is asking about data availability, methodology, or other non-quantitative aspects, focus your response on addressing those questions.
-
-Keep your analysis to 2-3 sentences at most. Be direct and informative, avoiding unnecessary explanations or qualifiers."""
-
-    response = client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=300,
-        temperature=0.2,
-        system="You are a data analyst expert specializing in flight data. Provide concise, insightful qualitative analysis of data. Never use more than 2-3 sentences in your response.",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    analysis = response.content[0].text.strip()
-    return analysis
-
-def generate_follow_up_questions(user_query: str, df: pd.DataFrame, sql_query: str) -> List[str]:
-    """Generate compelling follow-up questions based on the current query and results."""
-    # Determine column types for better suggestions
-    dtypes = {col: str(df[col].dtype) for col in df.columns}
-    
-    # Get a summary of the data to inform follow-up suggestions
-    data_summary = ""
-    if not df.empty:
-        # Create a brief summary of the data
-        data_summary = f"The returned data has {len(df)} rows with columns: {', '.join(df.columns)}."
+        # Convert to DataFrame for analysis
+        df = pd.DataFrame(data)
         
-        # Include sample values from key columns (limit to first 3 rows)
-        data_sample = df.head(3).to_dict(orient='records')
-        data_summary += f"\nSample data: {data_sample}"
-    else:
-        data_summary = "No data was returned from the query."
+        # Generate analysis and visualization
+        analysis = generate_analysis(df, user_query) if client else "Data retrieved successfully."
+        visualization = generate_visualization(df, user_query)
+        suggestions = generate_suggestions(user_query) if client else [
+            "What are the busiest airports?",
+            "Show me flight delays by month",
+            "Which airlines have the most flights?"
+        ]
+        
+        return {
+            'sql': sql_query,
+            'data': data,
+            'analysis': analysis,
+            'visualization': visualization,
+            'suggestions': suggestions
+        }
+        
+    except Exception as e:
+        error_msg = str(e)
+        return {
+            'sql': sql_query,
+            'data': [],
+            'error': f"SQL Error: {error_msg}",
+            'analysis': "There was an error executing your query.",
+            'visualization': None,
+            'suggestions': ["Try rephrasing your question", "Use simpler terms"]
+        }
+
+def generate_analysis(df: pd.DataFrame, user_query: str) -> str:
+    """Generate qualitative analysis of the query results."""
+    if not client:
+        return "Data analysis requires AI configuration."
     
-    # Create prompt for follow-up questions
-    prompt = f"""User's original query: "{user_query}"
-
-SQL query executed:
-{sql_query}
-
-Data summary: 
-{data_summary}
-
-Database schema:
-{SCHEMA_CONTEXT}
-
-Based on the user's original query and the data returned, generate 3-4 compelling and fascinating follow-up questions that would provide additional insights or explore related aspects.
-
-These follow-up questions should:
-1. Be natural, conversational, and specific
-2. Explore different aspects of the data than the original query
-3. Reveal interesting patterns or relationships
-4. Each question should be self-contained (no need for explanations)
-5. Questions should be distinctly different from each other
-
-Format your response as a numbered list with ONLY the follow-up questions, no explanations or additional text."""
-
-    response = client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=400,
-        temperature=0.7,  # Higher temperature for more creative suggestions
-        system="You are a curious data analyst generating compelling follow-up questions. Provide ONLY 3-4 numbered questions with no additional text.",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Convert DataFrame to a summary for the prompt
+    summary = f"Query results summary:\n"
+    summary += f"- Number of rows: {len(df)}\n"
+    summary += f"- Columns: {', '.join(df.columns.tolist())}\n"
     
-    # Process the response to extract just the questions
-    questions_text = response.content[0].text.strip()
+    if len(df) > 0:
+        # Add some sample data
+        summary += f"- Sample data:\n{df.head(3).to_string()}\n"
+        
+        # Add basic statistics for numeric columns
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            summary += f"- Numeric column statistics:\n{df[numeric_cols].describe().to_string()}\n"
     
-    # Split by numbered list indicators and clean up
-    # This handles formats like "1. Question", "1) Question", etc.
-    import re
-    questions = re.split(r'\d+[\.\)]?\s+', questions_text)
-    questions = [q.strip() for q in questions if q.strip()]
+    prompt = f"""Analyze the following query results and provide insights:
+
+Original question: {user_query}
+{summary}
+
+Provide a brief, insightful analysis (2-3 sentences) that:
+1. Summarizes the key findings
+2. Highlights interesting patterns or trends
+3. Puts the results in context
+
+Keep it conversational and accessible."""
+
+    try:
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"Error generating analysis: {e}")
+        return "Analysis generation failed, but your data query was successful."
+
+def generate_visualization(df: pd.DataFrame, user_query: str) -> Optional[str]:
+    """Generate appropriate visualization for the data."""
+    if df.empty or len(df) == 0:
+        return None
     
-    # Limit to 4 questions maximum
-    return questions[:4]
+    try:
+        # Determine chart type based on data characteristics
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'string']).columns.tolist()
+        
+        if len(numeric_cols) == 0:
+            return None
+        
+        # Simple heuristics for chart selection
+        if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
+            # Bar chart for categorical vs numeric
+            x_col = categorical_cols[0]
+            y_col = numeric_cols[0]
+            
+            # Limit to top 15 items for readability
+            if len(df) > 15:
+                df_plot = df.head(15).copy()
+            else:
+                df_plot = df.copy()
+            
+            fig = px.bar(df_plot, x=x_col, y=y_col, 
+                        title=f"{y_col.replace('_', ' ').title()} by {x_col.replace('_', ' ').title()}")
+            fig.update_layout(xaxis_tickangle=-45)
+            
+        elif len(numeric_cols) >= 2:
+            # Scatter plot for numeric vs numeric
+            fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1],
+                           title=f"{numeric_cols[1].replace('_', ' ').title()} vs {numeric_cols[0].replace('_', ' ').title()}")
+        else:
+            # Histogram for single numeric column
+            fig = px.histogram(df, x=numeric_cols[0],
+                             title=f"Distribution of {numeric_cols[0].replace('_', ' ').title()}")
+        
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)"
+        )
+        
+        return fig.to_json()
+    
+    except Exception as e:
+        print(f"Error generating visualization: {e}")
+        return None
+
+def generate_suggestions(user_query: str) -> List[str]:
+    """Generate follow-up question suggestions."""
+    if not client:
+        return [
+            "What are the busiest airports?",
+            "Show me flight delays by month",
+            "Which airlines have the most flights?"
+        ]
+    
+    prompt = f"""Given this flight data query: "{user_query}"
+
+Generate 3 short, interesting follow-up questions that a user might want to ask about NYC flight data.
+Make them specific and actionable. Return as a simple list, one question per line."""
+
+    try:
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        suggestions = [s.strip().lstrip('- ').lstrip('• ') for s in response.content[0].text.strip().split('\n') if s.strip()]
+        return suggestions[:3]  # Ensure we only return 3
+    except Exception as e:
+        print(f"Error generating suggestions: {e}")
+        return [
+            "What are the busiest airports?",
+            "Show me flight delays by month",
+            "Which airlines have the most flights?"
+        ]
+
+@app.route('/')
+def serve_frontend():
+    """Serve the main frontend page."""
+    return send_file('index.html')
+
+@app.route('/flight-data-chatbot/<path:filename>')
+def serve_static(filename):
+    """Serve static files from the build directory."""
+    return send_from_directory('dist', filename)
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Handle chat requests."""
+    """Main chat endpoint."""
+    data = request.get_json()
+    user_query = data.get('query')
+    session_id = data.get('session_id', str(uuid.uuid4()))
+    
+    if not user_query:
+        return jsonify({'error': 'No query provided'}), 400
+    
+    # Get or create conversation history
+    if session_id not in conversations:
+        conversations[session_id] = []
+    
+    conversation_history = conversations[session_id]
+    
     try:
-        data = request.json
-        user_query = data.get('query')
-        session_id = data.get('session_id')
+        # Generate SQL query
+        sql_query = generate_sql_query(user_query, conversation_history)
         
-        if not user_query:
-            return jsonify({'error': 'No query provided'}), 400
+        # Execute query and generate response
+        result = execute_query_and_generate_response(sql_query, user_query)
         
-        # Create a new session ID if not provided
-        if not session_id:
-            session_id = str(uuid.uuid4())
+        # Add to conversation history
+        conversation_history.append({"role": "user", "content": user_query})
+        conversation_history.append({"role": "assistant", "content": sql_query})
         
-        # Get or create conversation history
-        if session_id not in conversations:
-            conversations[session_id] = []
+        # Keep only last 10 exchanges
+        if len(conversation_history) > 20:
+            conversation_history = conversation_history[-20:]
+        conversations[session_id] = conversation_history
         
-        # Add user message to history
-        conversations[session_id].append({"role": "user", "content": user_query})
+        # Add session_id to response
+        result['session_id'] = session_id
         
-        # Keep only the last 3 messages to limit context size
-        if len(conversations[session_id]) > 3:
-            conversations[session_id] = conversations[session_id][-3:]
+        return jsonify(result)
         
-        # Generate SQL using conversation history
-        sql_query = generate_sql(user_query, conversations[session_id])
-        print(f"Generated SQL query: {sql_query}")
-        
-        # Add SQL to conversation history
-        conversations[session_id].append({"role": "assistant", "content": sql_query})
-        
-        try:
-            # Execute SQL query with error handling
-            try:
-                df = execute_sql(sql_query)
-            except Exception as sql_exec_error:
-                print(f"First SQL execution error: {str(sql_exec_error)}")
-                # Try simplifying the query if it fails
-                simplified_query = sql_query.split("GROUP BY")[0] + " LIMIT 10;"
-                try:
-                    df = execute_sql(simplified_query)
-                    sql_query = simplified_query
-                except Exception:
-                    # If that also fails, try a very basic query
-                    backup_query = f"SELECT * FROM flights LIMIT 5;"
-                    df = execute_sql(backup_query)
-                    sql_query = backup_query
-            
-            if df.empty:
-                return jsonify({
-                    'sql_query': sql_query,
-                    'data': [],
-                    'visualization': None,
-                    'analysis': "No data found for your query.",
-                    'follow_up_questions': [
-                        "What airlines operated flights in 2013?",
-                        "How many airports were served by NYC flights?",
-                        "What was the average flight distance?",
-                        "Which months had the most flights?"
-                    ],
-                    'session_id': session_id
-                })
-            
-            # Generate analysis of the data
-            analysis = generate_analysis(df, user_query, sql_query)
-            print(f"Generated analysis: {analysis}")
-            
-            # Generate follow-up questions
-            follow_up_questions = generate_follow_up_questions(user_query, df, sql_query)
-            print(f"Generated follow-up questions: {follow_up_questions}")
-            
-            # Generate visualization
-            viz_json = None
-            try:
-                # Limit dataframe size to prevent memory issues
-                viz_df = df.head(100) if len(df) > 100 else df
-                viz_code = generate_visualization(viz_df, user_query)
-                print(f"Generated visualization code: {viz_code}")
-                
-                # Define the local variables for the eval context
-                eval_locals = {'df': viz_df, 'px': px}
-                
-                # Execute the visualization code
-                exec(viz_code, globals(), eval_locals)
-                
-                # Get the figure from the locals
-                viz_fig = eval_locals.get('fig')
-                if viz_fig:
-                    viz_json = json.loads(viz_fig.to_json())
-            except Exception as viz_error:
-                print(f"Visualization error: {str(viz_error)}")
-                # Try a simpler fallback visualization
-                try:
-                    if len(df.columns) >= 2:
-                        # Simple fallback: bar chart of the first two columns
-                        x_col = df.columns[0]
-                        y_col = df.columns[1]
-                        fig = px.bar(df, x=x_col, y=y_col, title='Results')
-                        viz_json = json.loads(fig.to_json())
-                        print("Used fallback visualization")
-                except Exception as fallback_error:
-                    print(f"Fallback visualization error: {str(fallback_error)}")
-                    viz_json = None
-            
-            # Limit data returned to prevent large response
-            return_data = df.head(100).to_dict(orient='records') if len(df) > 100 else df.to_dict(orient='records')
-            
-            return jsonify({
-                'sql_query': sql_query,
-                'data': return_data,
-                'visualization': viz_json,
-                'analysis': analysis,
-                'follow_up_questions': follow_up_questions,
-                'session_id': session_id
-            })
-            
-        except Exception as sql_error:
-            print(f"SQL execution error: {str(sql_error)}")
-            return jsonify({
-                'error': f"SQL Error: {str(sql_error)}",
-                'sql_query': sql_query,
-                'session_id': session_id
-            }), 500
-            
     except Exception as e:
-        print(f"Error in chat endpoint: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': str(e),
+            'session_id': session_id,
+            'sql_query': sql_query if 'sql_query' in locals() else None
+        }), 500
+
+@app.route('/status')
+def status():
+    """Check system status."""
+    flight_count = get_flight_count()
+    
+    return jsonify({
+        'status': 'running',
+        'database_type': 'Supabase REST API',
+        'anthropic_api': 'configured' if ANTHROPIC_API_KEY else 'missing',
+        'database': 'connected' if flight_count > 0 else 'not loaded',
+        'flight_records': flight_count,
+        'message': f'Using Supabase REST API - Ready to analyze NYC 2013 flight data!' if flight_count > 0 else f'Using Supabase REST API - Data needs to be loaded'
+    })
+
+@app.route('/load-data', methods=['POST'])
+def load_data_endpoint():
+    """Endpoint to check if data is loaded."""
+    try:
+        flight_count = get_flight_count()
+        if flight_count > 0:
+            return jsonify({'status': 'success', 'message': f'Data already loaded: {flight_count:,} flight records'})
+        else:
+            return jsonify({'status': 'success', 'message': 'Data loading not needed with Supabase REST API'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=5001, debug=True) 
+    port = int(os.getenv('PORT', 5001))
+    print(f"Starting server on port {port}")
+    print(f"Supabase URL: {SUPABASE_URL}")
+    print(f"Anthropic API configured: {bool(ANTHROPIC_API_KEY)}")
+    app.run(host='0.0.0.0', port=port, debug=False) 
