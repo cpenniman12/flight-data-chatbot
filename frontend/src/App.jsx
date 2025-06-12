@@ -123,6 +123,18 @@ function App() {
     }))
   }
 
+  // Helper to parse visualization if it's a string
+  function getVisualization(viz) {
+    if (typeof viz === 'string') {
+      try {
+        return JSON.parse(viz);
+      } catch (e) {
+        return null;
+      }
+    }
+    return viz;
+  }
+
   return (
     <div style={{ 
       maxWidth: '100%', 
@@ -313,7 +325,7 @@ function App() {
                             marginTop: '0',
                             borderTop: '1px solid #333'
                           }}>
-                            {message.content.sql_query}
+                            {message.content.sql}
                           </pre>
                         )}
                       </div>
@@ -357,29 +369,35 @@ function App() {
                       </div>
 
                       {message.content.visualization && (
-                        <div>
-                          <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#ccc' }}>Visualization</h3>
-                          <div style={{ width: '100%', height: '300px', backgroundColor: '#1a1a1a', borderRadius: '4px', padding: '10px' }}>
-                            <Plot
-                              data={message.content.visualization.data}
-                              layout={{
-                                ...message.content.visualization.layout,
-                                margin: { l: 50, r: 20, t: 40, b: 50 },
-                                autosize: true,
-                                paper_bgcolor: '#1a1a1a',
-                                plot_bgcolor: '#1a1a1a',
-                                font: { color: '#ddd' },
-                                xaxis: { gridcolor: '#444' },
-                                yaxis: { gridcolor: '#444' }
-                              }}
-                              style={{ width: '100%', height: '100%' }}
-                              useResizeHandler={true}
-                              config={{
-                                displayModeBar: false
-                              }}
-                            />
-                          </div>
-                        </div>
+                        (() => {
+                          const viz = getVisualization(message.content.visualization);
+                          if (!viz) return null;
+                          return (
+                            <div>
+                              <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem', color: '#ccc' }}>Visualization</h3>
+                              <div style={{ width: '100%', height: '300px', backgroundColor: '#1a1a1a', borderRadius: '4px', padding: '10px' }}>
+                                <Plot
+                                  data={viz.data}
+                                  layout={{
+                                    ...viz.layout,
+                                    margin: { l: 50, r: 20, t: 40, b: 50 },
+                                    autosize: true,
+                                    paper_bgcolor: '#1a1a1a',
+                                    plot_bgcolor: '#1a1a1a',
+                                    font: { color: '#ddd' },
+                                    xaxis: { gridcolor: '#444' },
+                                    yaxis: { gridcolor: '#444' }
+                                  }}
+                                  style={{ width: '100%', height: '100%' }}
+                                  useResizeHandler={true}
+                                  config={{
+                                    displayModeBar: false
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })()
                       )}
                       
                       {message.content.follow_up_questions && message.content.follow_up_questions.length > 0 && (
