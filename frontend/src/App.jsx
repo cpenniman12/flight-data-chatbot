@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import Plot from 'react-plotly.js'
 
+// Use Vite env variable for API URL if set, otherwise default to relative path
+const API_URL = import.meta.env.VITE_API_URL || '';
+
 function App() {
   const [query, setQuery] = useState('')
   const [messages, setMessages] = useState([])
@@ -65,7 +68,7 @@ function App() {
     setError(null)
     
     try {
-      const response = await fetch('http://localhost:5001/chat', {
+      const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
