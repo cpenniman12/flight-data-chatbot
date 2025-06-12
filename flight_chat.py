@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from dotenv import load_dotenv
 from flask_cors import CORS
 import mimetypes
+import re
 
 # Load environment variables
 load_dotenv()
@@ -172,11 +173,27 @@ IMPORTANT RULES:
         print(f"Error generating SQL: {e}")
         return "SELECT carrier, COUNT(*) as flights FROM flights GROUP BY carrier ORDER BY flights DESC LIMIT 10;"
 
+def enforce_limit(sql_query, max_limit=100):
+    """Ensure the SQL query has a LIMIT <= max_limit. If not, add or lower it."""
+    # Remove trailing semicolon for easier processing
+    sql_query = sql_query.rstrip().rstrip(';')
+    # Check for existing LIMIT
+    limit_match = re.search(r'limit\s+(\d+)', sql_query, re.IGNORECASE)
+    if limit_match:
+        limit_val = int(limit_match.group(1))
+        if limit_val > max_limit:
+            sql_query = re.sub(r'limit\s+\d+', f'LIMIT {max_limit}', sql_query, flags=re.IGNORECASE)
+        return sql_query
+    # Otherwise, append a LIMIT
+    return f'{sql_query} LIMIT {max_limit}'
+
 def execute_query_and_generate_response(sql_query: str, user_query: str) -> Dict:
     """Execute SQL query and generate comprehensive response."""
     try:
         # Remove trailing semicolon if present (Supabase exec_sql does not allow it)
         sql_query = sql_query.rstrip().rstrip(';')
+        # Enforce a hard limit on all queries
+        sql_query = enforce_limit(sql_query, max_limit=100)
         # Execute the SQL query
         data = execute_supabase_sql(sql_query)
         
