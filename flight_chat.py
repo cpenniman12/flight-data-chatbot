@@ -175,6 +175,8 @@ IMPORTANT RULES:
 def execute_query_and_generate_response(sql_query: str, user_query: str) -> Dict:
     """Execute SQL query and generate comprehensive response."""
     try:
+        # Remove trailing semicolon if present (Supabase exec_sql does not allow it)
+        sql_query = sql_query.rstrip().rstrip(';')
         # Execute the SQL query
         data = execute_supabase_sql(sql_query)
         
