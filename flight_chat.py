@@ -5,11 +5,12 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 import anthropic
-from flask import Flask, request, jsonify, session, send_from_directory, send_file
+from flask import Flask, request, jsonify, session, send_from_directory, send_file, make_response, abort
 import plotly.express as px
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 from flask_cors import CORS
+import mimetypes
 
 # Load environment variables
 load_dotenv()
@@ -339,15 +340,40 @@ Make them specific and actionable. Return as a simple list, one question per lin
             "Which airlines have the most flights?"
         ]
 
+# --- Robust static file serving for Render/production ---
+STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'dist'))
+INDEX_FILE = os.path.join(STATIC_DIR, 'index.html')
+
 @app.route('/')
 def serve_frontend():
-    """Serve the main frontend page."""
-    return send_file(os.path.join('frontend', 'dist', 'index.html'))
+    """Serve the main frontend page (index.html)."""
+    if not os.path.exists(INDEX_FILE):
+        return ("<h1>Frontend build missing</h1><p>Run <code>npm run build</code> in frontend/ to generate dist/.</p>", 500)
+    return send_file(INDEX_FILE)
 
-@app.route('/flight-data-chatbot/<path:filename>')
+@app.route('/<path:filename>')
 def serve_static(filename):
-    """Serve static files from the build directory."""
-    return send_from_directory(os.path.join('frontend', 'dist'), filename)
+    """Serve static files from the frontend/dist directory with security and caching."""
+    requested_path = os.path.abspath(os.path.join(STATIC_DIR, filename))
+    if not requested_path.startswith(STATIC_DIR):
+        abort(403)  # Directory traversal attempt
+    if not os.path.exists(requested_path):
+        # SPA routing: serve index.html for unknown paths (except API)
+        if not filename.startswith('api') and not filename.startswith('chat'):
+            return send_file(INDEX_FILE)
+        abort(404)
+    # Set cache headers based on file type
+    response = make_response(send_file(requested_path))
+    mime, _ = mimetypes.guess_type(requested_path)
+    if mime and mime.startswith('text/html'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    elif mime and (mime.endswith('javascript') or mime.endswith('css')):
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    elif mime and mime.startswith('image/'):
+        response.headers['Cache-Control'] = 'public, max-age=2592000'
+    else:
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
 
 @app.route('/chat', methods=['POST'])
 def chat():
